@@ -43,9 +43,8 @@ def train(env, policy, optimizer, episodes=1000, gamma=0.99):
         log_probs = []
         rewards = []
 
-        terminated = False
-        truncated = False
-        while not terminated and not truncated:
+        done = False
+        while not done:
             state_tensor = torch.FloatTensor(state).unsqueeze(0)
             probs = policy(state_tensor)
             dist = Categorical(probs)
@@ -56,6 +55,7 @@ def train(env, policy, optimizer, episodes=1000, gamma=0.99):
             log_probs.append(dist.log_prob(action))
             rewards.append(reward)
             state = next_state
+            done = terminated or truncated
 
         # Compute returns and loss
         returns = compute_returns(rewards, gamma)
@@ -100,14 +100,14 @@ if __name__ == "__main__":
     while True:
         env.reset()
         state, _ = env.reset()
-        terminated = False
-        truncated = False
-        while not terminated and not truncated:
+        done = False
+        while not done:
             state_tensor = torch.FloatTensor(state).unsqueeze(0)
             probs = policy(state_tensor)
             action = probs.argmax().item()
             state, _, terminated, truncated, _ = env.step(action)
             env.render()
+            done = terminated or truncated
         time.sleep(0.2)
     env.close()
     # Note: Make sure to install the required libraries before running the code.
