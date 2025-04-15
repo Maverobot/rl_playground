@@ -48,7 +48,7 @@ def compute_returns(rewards, gamma):
 def train(
     env,
     policy,
-    value_fn,
+    value_net,
     policy_optimizer,
     value_optimizer,
     episodes=1000,
@@ -56,25 +56,34 @@ def train(
     batch_size=10,
     entropy_beta=0.01,
 ):
-    all_rewards = []
+    # Store total rewards for each episode
     episode_rewards = []
-
     for episode in range(episodes):
+        # Reset variables
         states, actions, rewards, log_probs = [], [], [], []
 
+        # Reset the environment and initialize the state with certain randomness
         state, _ = env.reset()
-        done = False
 
+        # Flag to indicate if the episode is done
+        done = False
         while not done:
+            # Convert state to tensor and get action probabilities
             state_tensor = torch.FloatTensor(state).unsqueeze(0)
             probs = policy(state_tensor)
+
+            # Sample action from the policy
             dist = Categorical(probs)
             action = dist.sample()
 
+            # Take action in the environment
             next_state, reward, terminated, truncated, _ = env.step(action.item())
+
+            # Mark episode as done if terminated or truncated
             done = terminated or truncated
 
             # Add reward shaping to encourage keeping the cart centered
+            # TODO(qu): Do not hardcode the magic number 4.8
             reward += (4.8 - abs(next_state[0])) / 4.8 * 1
 
             # Save experience
@@ -85,14 +94,18 @@ def train(
 
             state = next_state
 
-        # Compute returns and advantages
+        # Compute the "raw" returns
         returns = compute_returns(rewards, gamma)
-        states_tensor = torch.FloatTensor(states)
         returns_tensor = torch.FloatTensor(returns)
-        values = value_fn(states_tensor)
-        advantages = returns_tensor - values.detach()
 
-        # Policy loss
+        # Compute the values from the value network for each state in the episode
+        states_tensor = torch.FloatTensor(states)
+        values = value_net(states_tensor)
+
+        # Policy loss. It is used to train policy network by increasing the
+        # adantage over the baseline i.e. the value function.
+        advantages = returns_tensor - values.detach()
+        # TODO(qu): Understand the entropy term and why it is added
         log_probs_tensor = torch.stack(log_probs)
         entropy = -torch.sum(
             torch.stack(
@@ -103,10 +116,10 @@ def train(
                 ]
             )
         ) / len(states)
-
         policy_loss = -(log_probs_tensor * advantages).mean() - entropy_beta * entropy
 
-        # Value loss (MSE)
+        # Value loss (MSE). It is used to train the value network to predict
+        # the returns.
         value_loss = nn.functional.mse_loss(values, returns_tensor)
 
         # Optimize policy
@@ -121,13 +134,11 @@ def train(
         value_optimizer.step()
 
         episode_reward = sum(rewards)
-        all_rewards.append(episode_reward)
+        episode_rewards.append(episode_reward)
 
         if (episode + 1) % batch_size == 0:
-            avg = np.mean(all_rewards[-batch_size:])
+            avg = np.mean(episode_rewards[-batch_size:])
             print(f"Episode {episode+1}, avg reward (last {batch_size}): {avg:.2f}")
-
-        episode_rewards.append(episode_reward)
 
     return episode_rewards
 
@@ -135,15 +146,25 @@ def train(
 # Run the training
 if __name__ == "__main__":
     env = gym.make("CartPole-v1")
+
+    # Get the dimensions of the state and action spaces
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
+    # Initialize the policy network, which takes the
+    # state as input and outputs the action probabilities.
     policy = PolicyNet(state_dim, action_dim)
+
+    # Initialize the value network, which
+    # takes the state as input and outputs the value of that state, which is
+    # the expected return from that state.
     value_net = ValueNet(state_dim)
 
+    # Set up the optimizers for both networks
     policy_optimizer = optim.Adam(policy.parameters(), lr=1e-3)
     value_optimizer = optim.Adam(value_net.parameters(), lr=1e-3)
 
+    # Train the policy using the actor-critic method
     rewards = train(
         env, policy, value_net, policy_optimizer, value_optimizer, episodes=1500
     )
