@@ -1,5 +1,5 @@
-# This code implements REINFORCE with a baseline (value function) to reduce variance in the policy gradient estimates.
-# It works very well.
+# This code implements the advantage actor-critic (A2C) algorithm to solve the CartPole-v1 environment from OpenAI's gym.
+# It works well but seems to be slightly less efficient than the REINFORCE with baseline implementation, at least for the CartPole-v1 environment.
 import time
 
 import gymnasium as gym
@@ -36,16 +36,6 @@ class ValueNet(nn.Module):
         return self.fc(x).squeeze(-1)
 
 
-# Compute discounted rewards
-def compute_returns(rewards, gamma):
-    R = 0
-    returns = []
-    for r in reversed(rewards):
-        R = r + gamma * R
-        returns.insert(0, R)
-    return returns
-
-
 # Training function
 def train(
     env,
@@ -61,11 +51,12 @@ def train(
     # Store total rewards for each episode
     episode_rewards = []
     for episode in range(episodes):
-        # Reset variables
-        states, actions, rewards, log_probs = [], [], [], []
-
         # Reset the environment and initialize the state with certain randomness
         state, _ = env.reset()
+
+        # Reset variables
+        states, log_probs, values, advantages, td_targets = [], [], [], [], []
+        episode_reward = 0
 
         # Flag to indicate if the episode is done
         done = False
@@ -81,34 +72,37 @@ def train(
             # Take action in the environment
             next_state, reward, terminated, truncated, _ = env.step(action.item())
 
-            # Mark episode as done if terminated or truncated
+            # Check if the episode is done
             done = terminated or truncated
 
-            # Add reward shaping to encourage keeping the cart centered
-            # TODO(qu): Do not hardcode the magic number 4.8
-            reward += (4.8 - abs(next_state[0])) / 4.8 * 1
+            # Convert next state to tensor
+            next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0)
 
-            # Save experience
+            # Compute TD target and advantage
+            # TD means temporal difference. This TD target is the TD(0) target, i.e., the
+            # one step ahead target. When the entire episode is used, TD(n)
+            # converges to the Monte Carlo learning approach.
+            value = value_net(state_tensor)
+            next_value = (
+                value_net(next_state_tensor) if not done else torch.tensor([0.0])
+            )
+            td_target = reward + gamma * next_value.detach()
+            advantage = td_target - value
+
+            # Store training data
             states.append(state)
-            actions.append(action)
             log_probs.append(dist.log_prob(action))
-            rewards.append(reward)
+            values.append(value)
+            advantages.append(advantage)
+            td_targets.append(td_target)
 
+            episode_reward += reward
             state = next_state
 
-        # Compute the "raw" returns
-        returns = compute_returns(rewards, gamma)
-        returns_tensor = torch.FloatTensor(returns)
+        log_probs_tensor = torch.stack(log_probs).squeeze()
+        advantages_tensor = torch.stack(advantages).squeeze().detach()
 
-        # Compute the values from the value network for each state in the episode
-        states_tensor = torch.FloatTensor(states)
-        values = value_net(states_tensor)
-
-        # Policy loss. It is used to train policy network by increasing the
-        # adantage over the baseline i.e. the value function.
-        advantages = returns_tensor - values.detach()
-        # TODO(qu): Understand the entropy term and why it is added
-        log_probs_tensor = torch.stack(log_probs)
+        # Policy loss with entropy bonus
         entropy = -torch.sum(
             torch.stack(
                 [
@@ -118,11 +112,14 @@ def train(
                 ]
             )
         ) / len(states)
-        policy_loss = -(log_probs_tensor * advantages).mean() - entropy_beta * entropy
+        policy_loss = (
+            -(log_probs_tensor * advantages_tensor).mean() - entropy_beta * entropy
+        )
 
-        # Value loss (MSE). It is used to train the value network to predict
-        # the returns.
-        value_loss = nn.functional.mse_loss(values, returns_tensor)
+        # Value loss
+        td_targets_tensor = torch.stack(td_targets).squeeze().detach()
+        values_tensor = torch.stack(values).squeeze()
+        value_loss = nn.functional.mse_loss(values_tensor, td_targets_tensor)
 
         # Optimize policy
         policy_optimizer.zero_grad()
@@ -135,7 +132,6 @@ def train(
         value_loss.backward()
         value_optimizer.step()
 
-        episode_reward = sum(rewards)
         episode_rewards.append(episode_reward)
 
         if (episode + 1) % batch_size == 0:
