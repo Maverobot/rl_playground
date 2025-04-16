@@ -84,10 +84,6 @@ def train(
             # Mark episode as done if terminated or truncated
             done = terminated or truncated
 
-            # Add reward shaping to encourage keeping the cart centered
-            # TODO(qu): Do not hardcode the magic number 4.8
-            reward += (4.8 - abs(next_state[0])) / 4.8 * 1
-
             # Save experience
             states.append(state)
             actions.append(action)
