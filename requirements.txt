@@ -1,5 +1,6 @@
 numpy
-gymnasium
+swig
+gymnasium[box2d]
 matplotlib
 pygame
 torch

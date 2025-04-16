@@ -1,5 +1,8 @@
 # This code implements REINFORCE with a baseline (value function) to reduce variance in the policy gradient estimates.
-# It works very well.
+# It has been tested in following environments:
+# - CartPole-v1: it works well with 1500 episodes
+# - LunarLander-v3: the lander is able to land properly after about 7000 episodes but it does not yet learn to turn off the engines once landed.
+import argparse
 import time
 
 import gymnasium as gym
@@ -57,6 +60,7 @@ def train(
     gamma=0.99,
     batch_size=10,
     entropy_beta=0.01,
+    preemption_reward=None,
 ):
     # Store total rewards for each episode
     episode_rewards = []
@@ -137,13 +141,35 @@ def train(
         if (episode + 1) % batch_size == 0:
             avg = np.mean(episode_rewards[-batch_size:])
             print(f"Episode {episode+1}, avg reward (last {batch_size}): {avg:.2f}")
+            if preemption_reward is not None and avg >= preemption_reward:
+                print(
+                    f"Preemption reward threshold of {preemption_reward} reached. Stopping training."
+                )
+                break
 
     return episode_rewards
 
 
 # Run the training
 if __name__ == "__main__":
-    env = gym.make("CartPole-v1")
+    # Get environment name from command line argument
+    argument_parser = argparse.ArgumentParser()
+    argument_parser.add_argument(
+        "--env", type=str, default="CartPole-v1", help="Environment name"
+    )
+    argument_parser.add_argument(
+        "--episodes", type=int, default=1000, help="Number of training episodes"
+    )
+    argument_parser.add_argument(
+        "--training-preemption-reward",
+        type=float,
+        default=None,
+        help="Preemption reward threshold of the training episode",
+    )
+    args = argument_parser.parse_args()
+    env_name = args.env
+
+    env = gym.make(env_name, render_mode="rgb_array")
 
     # Get the dimensions of the state and action spaces
     state_dim = env.observation_space.shape[0]
@@ -164,18 +190,24 @@ if __name__ == "__main__":
 
     # Train the policy using the actor-critic method
     rewards = train(
-        env, policy, value_net, policy_optimizer, value_optimizer, episodes=1500
+        env,
+        policy,
+        value_net,
+        policy_optimizer,
+        value_optimizer,
+        episodes=args.episodes,
+        preemption_reward=args.training_preemption_reward,
     )
 
     # Plot results
     plt.plot(rewards)
     plt.xlabel("Episode")
     plt.ylabel("Total Reward")
-    plt.title("Improved REINFORCE (Actor-Critic) on CartPole")
+    plt.title(f"Improved REINFORCE (Actor-Critic) on {env_name}")
     plt.show(block=False)
 
     # Show final policy
-    env = gym.make("CartPole-v1", render_mode="human")
+    env = gym.make(env_name, render_mode="human")
     while True:
         env.reset()
         state, _ = env.reset()
@@ -184,12 +216,12 @@ if __name__ == "__main__":
             state_tensor = torch.FloatTensor(state).unsqueeze(0)
             probs = policy(state_tensor)
             action = probs.argmax().item()
-            state, _, terminated, truncated, _ = env.step(action)
+            state, reward, terminated, truncated, _ = env.step(action)
             env.render()
             done = terminated or truncated
             if done:
                 print(
-                    f"Episode finished after {len(rewards)} timesteps. Terminated: {terminated}, truncated: {truncated}"
+                    f"Episode finished with reward {reward}. Terminated: {terminated}, truncated: {truncated}"
                 )
         time.sleep(0.2)
     env.close()
